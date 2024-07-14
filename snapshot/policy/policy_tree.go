@@ -13,11 +13,13 @@ var (
 		CompressorName: "none",
 	}
 
+	defaultSplitterPolicy = SplitterPolicy{}
+
 	// defaultErrorHandlingPolicy is the default error handling policy.
 	defaultErrorHandlingPolicy = ErrorHandlingPolicy{
-		IgnoreFileErrors:      newOptionalBool(false),
-		IgnoreDirectoryErrors: newOptionalBool(false),
-		IgnoreUnknownTypes:    newOptionalBool(true),
+		IgnoreFileErrors:      NewOptionalBool(false),
+		IgnoreDirectoryErrors: NewOptionalBool(false),
+		IgnoreUnknownTypes:    NewOptionalBool(true),
 	}
 
 	// defaultFilesPolicy is the default file ignore policy.
@@ -46,17 +48,25 @@ var (
 		KeepWeekly:               newOptionalInt(defaultKeepWeekly),
 		KeepMonthly:              newOptionalInt(defaultKeepMonthly),
 		KeepAnnual:               newOptionalInt(defaultKeepAnnual),
-		IgnoreIdenticalSnapshots: newOptionalBool(defaultIgnoreIdenticalSnapshots),
+		IgnoreIdenticalSnapshots: NewOptionalBool(defaultIgnoreIdenticalSnapshots),
 	}
 
-	defaultSchedulingPolicy = SchedulingPolicy{}
+	defaultSchedulingPolicy = SchedulingPolicy{
+		RunMissed: NewOptionalBool(defaultRunMissed),
+	}
+
+	defaultOSSnapshotPolicy = OSSnapshotPolicy{
+		VolumeShadowCopy: VolumeShadowCopyPolicy{
+			Enable: NewOSSnapshotMode(OSSnapshotNever),
+		},
+	}
 
 	defaultUploadPolicy = UploadPolicy{
 		MaxParallelSnapshots: newOptionalInt(1),
 		MaxParallelFileReads: nil, // defaults to runtime.NumCPUs()
 
 		// upload large files in chunks of 2 GiB
-		ParallelUploadAboveSize: newOptionalInt64(2 << 30), //nolint:gomnd
+		ParallelUploadAboveSize: newOptionalInt64(2 << 30), //nolint:mnd
 	}
 
 	// DefaultPolicy is a default policy returned by policy tree in absence of other policies.
@@ -68,6 +78,7 @@ var (
 		SchedulingPolicy:    defaultSchedulingPolicy,
 		LoggingPolicy:       defaultLoggingPolicy,
 		Actions:             defaultActionsPolicy,
+		OSSnapshotPolicy:    defaultOSSnapshotPolicy,
 		UploadPolicy:        defaultUploadPolicy,
 	}
 

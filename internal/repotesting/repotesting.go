@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/internal/blobtesting"
+	"github.com/kopia/kopia/internal/metrics"
 	"github.com/kopia/kopia/internal/testlogging"
 	"github.com/kopia/kopia/internal/testutil"
 	"github.com/kopia/kopia/repo"
@@ -41,6 +42,13 @@ type Options struct {
 	OpenOptions          func(*repo.Options)
 }
 
+// RepositoryMetrics returns metrics.Registry associated with a repository.
+func (e *Environment) RepositoryMetrics() *metrics.Registry {
+	return e.Repository.(interface {
+		Metrics() *metrics.Registry
+	}).Metrics()
+}
+
 // RootStorage returns the base storage map that implements the base in-memory
 // map at the base of all storage wrappers on top.
 func (e *Environment) RootStorage() blob.Storage {
@@ -60,7 +68,7 @@ func (e *Environment) setup(tb testing.TB, version format.Version, opts ...Optio
 			MutableParameters: format.MutableParameters{
 				Version: version,
 			},
-			HMACSecret:           []byte{},
+			HMACSecret:           []byte("a-repository-testing-hmac-secret"),
 			Hash:                 "HMAC-SHA256",
 			Encryption:           encryption.DefaultAlgorithm,
 			EnablePasswordChange: true,

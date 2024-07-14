@@ -18,10 +18,8 @@ import (
 	"github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/fs/localfs"
 	"github.com/kopia/kopia/internal/clock"
-	"github.com/kopia/kopia/internal/timetrack"
 	"github.com/kopia/kopia/internal/units"
 	"github.com/kopia/kopia/repo"
-	"github.com/kopia/kopia/repo/content/index"
 	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/restore"
@@ -125,10 +123,13 @@ type commandRestore struct {
 	snapshotTime                  string
 
 	restores []restoreSourceTarget
+
+	svc appServices
 }
 
 func (c *commandRestore) setup(svc appServices, parent commandParent) {
 	c.restoreShallowAtDepth = unlimitedDepth
+	c.svc = svc
 
 	cmd := parent.Command("restore", restoreCommandHelp)
 	cmd.Arg("sources", restoreCommandSourcePathHelp).Required().StringsVar(&c.restoreTargetPaths)
@@ -149,7 +150,7 @@ func (c *commandRestore) setup(svc appServices, parent commandParent) {
 	cmd.Flag("delete-extra", "Delete additional files, directories and symlinks that already exist in the output but do not exist in the snapshot").BoolVar(&c.restoreDeleteExtra)
 	cmd.Flag("shallow", "Shallow restore the directory hierarchy starting at this level (default is to deep restore the entire hierarchy.)").Int32Var(&c.restoreShallowAtDepth)
 	cmd.Flag("shallow-minsize", "When doing a shallow restore, write actual files instead of placeholders smaller than this size.").Int32Var(&c.minSizeForPlaceholder)
-	cmd.Flag("snapshot-time", "When using a path as the source, use the latest snapshot available before this date. Default is latest").StringVar(&c.snapshotTime)
+	cmd.Flag("snapshot-time", "When using a path as the source, use the latest snapshot available before this date. Default is latest").Default("latest").StringVar(&c.snapshotTime)
 	cmd.Action(svc.repositoryReaderAction(c.run))
 }
 
@@ -401,7 +402,18 @@ func (c *commandRestore) run(ctx context.Context, rep repo.Repository) error {
 			rootEntry = re
 		}
 
-		eta := timetrack.Start()
+		restoreProgress := c.svc.getRestoreProgress()
+		progressCallback := func(ctx context.Context, stats restore.Stats) {
+			restoreProgress.SetCounters(
+				stats.EnqueuedFileCount+stats.EnqueuedDirCount+stats.EnqueuedSymlinkCount,
+				stats.RestoredFileCount+stats.RestoredDirCount+stats.RestoredSymlinkCount,
+				stats.SkippedCount,
+				stats.IgnoredErrorCount,
+				stats.EnqueuedTotalFileSize,
+				stats.RestoredTotalFileSize,
+				stats.SkippedTotalFileSize,
+			)
+		}
 
 		st, err := restore.Entry(ctx, rep, output, rootEntry, restore.Options{
 			Parallel:               c.restoreParallel,
@@ -410,48 +422,14 @@ func (c *commandRestore) run(ctx context.Context, rep repo.Repository) error {
 			IgnoreErrors:           c.restoreIgnoreErrors,
 			RestoreDirEntryAtDepth: c.restoreShallowAtDepth,
 			MinSizeForPlaceholder:  c.minSizeForPlaceholder,
-			ProgressCallback: func(ctx context.Context, stats restore.Stats) {
-				restoredCount := stats.RestoredFileCount + stats.RestoredDirCount + stats.RestoredSymlinkCount + stats.SkippedCount
-				enqueuedCount := stats.EnqueuedFileCount + stats.EnqueuedDirCount + stats.EnqueuedSymlinkCount
-
-				if restoredCount == 0 {
-					return
-				}
-
-				var maybeRemaining, maybeSkipped, maybeDeleted, maybeErrors string
-
-				if est, ok := eta.Estimate(float64(stats.RestoredTotalFileSize), float64(stats.EnqueuedTotalFileSize)); ok {
-					maybeRemaining = fmt.Sprintf(" %v (%.1f%%) remaining %v",
-						units.BytesPerSecondsString(est.SpeedPerSecond),
-						est.PercentComplete,
-						est.Remaining)
-				}
-
-				if stats.SkippedCount > 0 {
-					maybeSkipped = fmt.Sprintf(", skipped %v (%v)", stats.SkippedCount, units.BytesString(stats.SkippedTotalFileSize))
-				}
-
-				if stats.DeletedCount > 0 {
-					maybeDeleted = fmt.Sprintf(", deleted %v", stats.DeletedCount)
-				}
-
-				if stats.IgnoredErrorCount > 0 {
-					maybeErrors = fmt.Sprintf(", ignored %v errors", stats.IgnoredErrorCount)
-				}
-
-				log(ctx).Infof("Processed %v (%v) of %v (%v)%v%v%v%v.",
-					restoredCount, units.BytesString(stats.RestoredTotalFileSize),
-					enqueuedCount, units.BytesString(stats.EnqueuedTotalFileSize),
-					maybeSkipped,
-					maybeDeleted,
-					maybeErrors,
-					maybeRemaining)
-			},
+			ProgressCallback:       progressCallback,
 		})
 		if err != nil {
 			return errors.Wrap(err, "error restoring")
 		}
 
+		progressCallback(ctx, st)
+		restoreProgress.Flush() // Force last progress values to be printed
 		printRestoreStats(ctx, &st)
 	}
 
@@ -464,7 +442,7 @@ func (c *commandRestore) tryToConvertPathToID(ctx context.Context, rep repo.Repo
 	pathElements := strings.Split(filepath.ToSlash(source), "/")
 
 	if pathElements[0] != "" {
-		_, err := index.ParseID(pathElements[0])
+		_, err := object.ParseID(pathElements[0])
 		if err == nil {
 			// source is an ID
 			return source, nil
@@ -521,13 +499,13 @@ func (c *commandRestore) tryToConvertPathToID(ctx context.Context, rep repo.Repo
 
 func createSnapshotTimeFilter(timespec string) (func(*snapshot.Manifest, int, int) bool, error) {
 	if timespec == "" || timespec == "latest" {
-		return func(m *snapshot.Manifest, i, total int) bool {
+		return func(_ *snapshot.Manifest, i, _ int) bool {
 			return i == 0
 		}, nil
 	}
 
 	if timespec == "oldest" {
-		return func(m *snapshot.Manifest, i, total int) bool {
+		return func(_ *snapshot.Manifest, i, total int) bool {
 			return i == total-1
 		}, nil
 	}
@@ -537,7 +515,7 @@ func createSnapshotTimeFilter(timespec string) (func(*snapshot.Manifest, int, in
 		return nil, err
 	}
 
-	return func(m *snapshot.Manifest, i, total int) bool {
+	return func(m *snapshot.Manifest, _, _ int) bool {
 		return m.StartTime.ToTime().Before(t)
 	}, nil
 }
@@ -575,9 +553,9 @@ func computeMaxTime(timespec string) (time.Time, error) {
 	}
 
 	// Just used as markers, the value does not really matter
-	day := 24 * time.Hour //nolint:gomnd
-	month := 30 * day     //nolint:gomnd
-	year := 12 * month    //nolint:gomnd
+	day := 24 * time.Hour //nolint:mnd
+	month := 30 * day     //nolint:mnd
+	year := 12 * month    //nolint:mnd
 
 	formats := []struct {
 		format    string

@@ -92,9 +92,7 @@ func TestEndurance(t *testing.T) {
 	rwMutex := &sync.RWMutex{}
 
 	t.Run("Runners", func(t *testing.T) {
-		for i := 0; i < enduranceRunnerCount; i++ {
-			i := i
-
+		for i := range enduranceRunnerCount {
 			t.Run(fmt.Sprintf("Runner-%v", i), func(t *testing.T) {
 				t.Parallel()
 				defer func() {
@@ -274,7 +272,7 @@ func enduranceRunner(t *testing.T, runnerID int, fakeTimeServer, webdavServer st
 	e.RunAndExpectSuccess(t, "repo", "connect", "webdav", "--url", webdavServer, "--override-username="+fmt.Sprintf("runner-%v", runnerID))
 
 	if runnerID == 0 {
-		e.RunAndExpectSuccess(t, "gc", "set", "--enable-full=true", "--full-interval=4h", "--owner=me")
+		e.RunAndExpectSuccess(t, "maintenance", "set", "--enable-full=true", "--full-interval=4h", "--owner=me")
 	}
 
 	var s runnerState

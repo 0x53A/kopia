@@ -31,6 +31,8 @@ type committedContentIndex struct {
 
 	mu sync.RWMutex
 	// +checklocks:mu
+	permissiveCacheLoading bool
+	// +checklocks:mu
 	deletionWatermark time.Time
 	// +checklocks:mu
 	inUse map[blob.ID]index.Index
@@ -61,24 +63,26 @@ func (c *committedContentIndex) getContent(contentID ID) (Info, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	info, err := c.merged.GetInfo(contentID)
-	if info != nil {
+	var info Info
+
+	ok, err := c.merged.GetInfo(contentID, &info)
+	if ok {
 		if shouldIgnore(info, c.deletionWatermark) {
-			return nil, ErrContentNotFound
+			return index.Info{}, ErrContentNotFound
 		}
 
 		return info, nil
 	}
 
 	if err == nil {
-		return nil, ErrContentNotFound
+		return index.Info{}, ErrContentNotFound
 	}
 
-	return nil, errors.Wrap(err, "error getting content info from index")
+	return index.Info{}, errors.Wrap(err, "error getting content info from index")
 }
 
-func shouldIgnore(id Info, deletionWatermark time.Time) bool {
-	if !id.GetDeleted() {
+func shouldIgnore(id index.Info, deletionWatermark time.Time) bool {
+	if !id.Deleted {
 		return false
 	}
 
@@ -129,7 +133,7 @@ func (c *committedContentIndex) listContents(r IDRange, cb func(i Info) error) e
 	c.mu.RUnlock()
 
 	//nolint:wrapcheck
-	return m.Iterate(r, func(i Info) error {
+	return m.Iterate(r, func(i index.Info) error {
 		if shouldIgnore(i, deletionWatermark) {
 			return nil
 		}
@@ -168,6 +172,10 @@ func (c *committedContentIndex) merge(ctx context.Context, indexFiles []blob.ID)
 
 			ndx, err = c.cache.openIndex(ctx, e)
 			if err != nil {
+				if c.permissiveCacheLoading {
+					continue
+				}
+
 				newlyOpened.Close() //nolint:errcheck
 
 				return nil, nil, errors.Wrapf(err, "unable to open pack index %q", e)
@@ -180,7 +188,7 @@ func (c *committedContentIndex) merge(ctx context.Context, indexFiles []blob.ID)
 		newUsedMap[e] = ndx
 	}
 
-	mergedAndCombined, err := c.combineSmallIndexes(newMerged)
+	mergedAndCombined, err := c.combineSmallIndexes(ctx, newMerged)
 	if err != nil {
 		newlyOpened.Close() //nolint:errcheck
 
@@ -233,7 +241,7 @@ func (c *committedContentIndex) use(ctx context.Context, indexFiles []blob.ID, i
 	return nil
 }
 
-func (c *committedContentIndex) combineSmallIndexes(m index.Merged) (index.Merged, error) {
+func (c *committedContentIndex) combineSmallIndexes(ctx context.Context, m index.Merged) (index.Merged, error) {
 	var toKeep, toMerge index.Merged
 
 	for _, ndx := range m {
@@ -251,7 +259,7 @@ func (c *committedContentIndex) combineSmallIndexes(m index.Merged) (index.Merge
 	b := index.Builder{}
 
 	for _, ndx := range toMerge {
-		if err := ndx.Iterate(index.AllIDs, func(i Info) error {
+		if err := ndx.Iterate(index.AllIDs, func(i index.Info) error {
 			b.Add(i)
 			return nil
 		}); err != nil {
@@ -259,7 +267,7 @@ func (c *committedContentIndex) combineSmallIndexes(m index.Merged) (index.Merge
 		}
 	}
 
-	mp, mperr := c.formatProvider.GetMutableParameters()
+	mp, mperr := c.formatProvider.GetMutableParameters(ctx)
 	if mperr != nil {
 		return nil, errors.Wrap(mperr, "error getting mutable parameters")
 	}
@@ -291,7 +299,7 @@ func (c *committedContentIndex) close() error {
 	return nil
 }
 
-func (c *committedContentIndex) fetchIndexBlobs(ctx context.Context, indexBlobs []blob.ID) error {
+func (c *committedContentIndex) fetchIndexBlobs(ctx context.Context, isPermissiveCacheLoading bool, indexBlobs []blob.ID) error {
 	ch, err := c.missingIndexBlobs(ctx, indexBlobs)
 	if err != nil {
 		return err
@@ -304,7 +312,8 @@ func (c *committedContentIndex) fetchIndexBlobs(ctx context.Context, indexBlobs 
 	c.log.Debugf("Downloading %v new index blobs...", len(indexBlobs))
 
 	eg, ctx := errgroup.WithContext(ctx)
-	for i := 0; i < parallelFetches; i++ {
+
+	for range parallelFetches {
 		eg.Go(func() error {
 			var data gather.WriteBuffer
 			defer data.Close()
@@ -313,6 +322,11 @@ func (c *committedContentIndex) fetchIndexBlobs(ctx context.Context, indexBlobs 
 				data.Reset()
 
 				if err := c.fetchOne(ctx, indexBlobID, &data); err != nil {
+					if isPermissiveCacheLoading {
+						c.log.Errorf("skipping bad read of index blob %v", indexBlobID)
+						continue
+					}
+
 					return errors.Wrapf(err, "error loading index blob %v", indexBlobID)
 				}
 
@@ -320,6 +334,7 @@ func (c *committedContentIndex) fetchIndexBlobs(ctx context.Context, indexBlobs 
 					return errors.Wrap(err, "unable to add to committed content cache")
 				}
 			}
+
 			return nil
 		})
 	}
@@ -328,7 +343,7 @@ func (c *committedContentIndex) fetchIndexBlobs(ctx context.Context, indexBlobs 
 		return errors.Wrap(err, "error downloading indexes")
 	}
 
-	c.log.Debugf("Index blobs downloaded.")
+	c.log.Debug("Index blobs downloaded.")
 
 	return nil
 }
@@ -355,6 +370,7 @@ func (c *committedContentIndex) missingIndexBlobs(ctx context.Context, blobs []b
 func newCommittedContentIndex(caching *CachingOptions,
 	v1PerContentOverhead func() int,
 	formatProvider format.Provider,
+	permissiveCacheLoading bool,
 	fetchOne func(ctx context.Context, blobID blob.ID, output *gather.WriteBuffer) error,
 	log logging.Logger,
 	minSweepAge time.Duration,
@@ -372,11 +388,12 @@ func newCommittedContentIndex(caching *CachingOptions,
 	}
 
 	return &committedContentIndex{
-		cache:                cache,
-		inUse:                map[blob.ID]index.Index{},
-		v1PerContentOverhead: v1PerContentOverhead,
-		formatProvider:       formatProvider,
-		fetchOne:             fetchOne,
-		log:                  log,
+		cache:                  cache,
+		permissiveCacheLoading: permissiveCacheLoading,
+		inUse:                  map[blob.ID]index.Index{},
+		v1PerContentOverhead:   v1PerContentOverhead,
+		formatProvider:         formatProvider,
+		fetchOne:               fetchOne,
+		log:                    log,
 	}
 }

@@ -65,7 +65,7 @@ func (c *commandBenchmarkHashing) runBenchmark(ctx context.Context) []cryptoBenc
 	for _, ha := range hashing.SupportedAlgorithms() {
 		hf, err := hashing.CreateHashFunc(&format.ContentFormat{
 			Hash:       ha,
-			HMACSecret: make([]byte, 32), //nolint:gomnd
+			HMACSecret: make([]byte, 32), //nolint:mnd
 		})
 		if err != nil {
 			continue
@@ -78,10 +78,10 @@ func (c *commandBenchmarkHashing) runBenchmark(ctx context.Context) []cryptoBenc
 
 		hashCount := c.repeat
 
-		runInParallelNoResult(c.parallel, func() {
+		runInParallelNoInputNoResult(c.parallel, func() {
 			var hashOutput [hashing.MaxHashSize]byte
 
-			for i := 0; i < hashCount; i++ {
+			for range hashOutput {
 				hf(hashOutput[:0], input)
 			}
 		})

@@ -77,7 +77,7 @@ func (c *commandPolicyEdit) run(ctx context.Context, rep repo.RepositoryWriter) 
 
 		log(ctx).Infof("Editing policy for %v using external editor...", target)
 
-		s := policyEditHelpText + prettyJSON(original)
+		s := fmt.Sprintf(policyEditHelpText, target) + prettyJSON(original)
 		s = insertHelpText(s, `  "retention": {`, policyEditRetentionHelpText)
 		s = insertHelpText(s, `  "files": {`, policyEditFilesHelpText)
 		s = insertHelpText(s, `  "scheduling": {`, policyEditSchedulingHelpText)
@@ -88,7 +88,7 @@ func (c *commandPolicyEdit) run(ctx context.Context, rep repo.RepositoryWriter) 
 			updated = &policy.Policy{}
 			d := json.NewDecoder(bytes.NewBufferString(edited))
 			d.DisallowUnknownFields()
-			//nolint:wrapcheck
+
 			return d.Decode(updated)
 		}); err != nil {
 			return errors.Wrap(err, "unable to launch editor")
@@ -105,7 +105,7 @@ func (c *commandPolicyEdit) run(ctx context.Context, rep repo.RepositoryWriter) 
 
 		var shouldSave string
 
-		fmt.Scanf("%v", &shouldSave)
+		fmt.Scanf("%v", &shouldSave) //nolint:errcheck
 
 		if strings.HasPrefix(strings.ToLower(shouldSave), "y") {
 			if err := policy.SetPolicy(ctx, rep, target, updated); err != nil {

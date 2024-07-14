@@ -35,7 +35,8 @@ type contentReader interface {
 
 type contentManager interface {
 	contentReader
-	SupportsContentCompression() (bool, error)
+
+	SupportsContentCompression() bool
 	WriteContent(ctx context.Context, data gather.Bytes, prefix content.IDPrefix, comp compression.HeaderID) (content.ID, error)
 }
 
@@ -43,9 +44,9 @@ type contentManager interface {
 type Manager struct {
 	Format format.ObjectFormat
 
-	contentMgr  contentManager
-	newSplitter splitter.Factory
-	writerPool  sync.Pool
+	contentMgr         contentManager
+	newDefaultSplitter splitter.Factory
+	writerPool         sync.Pool
 }
 
 // NewWriter creates an ObjectWriter for writing to the repository.
@@ -53,7 +54,19 @@ func (om *Manager) NewWriter(ctx context.Context, opt WriterOptions) Writer {
 	w, _ := om.writerPool.Get().(*objectWriter)
 	w.ctx = ctx
 	w.om = om
-	w.splitter = om.newSplitter()
+
+	var splitFactory splitter.Factory
+
+	if opt.Splitter != "" {
+		splitFactory = splitter.GetFactory(opt.Splitter)
+	}
+
+	if splitFactory == nil {
+		splitFactory = om.newDefaultSplitter
+	}
+
+	w.splitter = splitFactory()
+
 	w.description = opt.Description
 	w.prefix = opt.Prefix
 	w.compressor = compression.ByName[opt.Compressor]
@@ -180,7 +193,7 @@ func appendIndexEntries(indexEntries []IndirectObjectEntry, startingLength int64
 	return indexEntries, totalLength
 }
 
-func noop(contentID content.ID) error { return nil }
+func noop(content.ID) error { return nil }
 
 // PrefetchBackingContents attempts to brings contents backing the provided object IDs into the cache.
 // This may succeed only partially due to cache size limits and other.
@@ -199,6 +212,8 @@ func PrefetchBackingContents(ctx context.Context, contentMgr contentManager, obj
 
 // NewObjectManager creates an ObjectManager with the specified content manager and format.
 func NewObjectManager(ctx context.Context, bm contentManager, f format.ObjectFormat, mr *metrics.Registry) (*Manager, error) {
+	_ = mr
+
 	om := &Manager{
 		contentMgr: bm,
 		Format:     f,
@@ -220,7 +235,7 @@ func NewObjectManager(ctx context.Context, bm contentManager, f format.ObjectFor
 		return nil, errors.Errorf("unsupported splitter %q", f.Splitter)
 	}
 
-	om.newSplitter = splitter.Pooled(os)
+	om.newDefaultSplitter = os
 
 	return om, nil
 }

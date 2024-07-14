@@ -23,6 +23,7 @@ import (
 	"github.com/kopia/kopia/repo/blob"
 	"github.com/kopia/kopia/repo/logging"
 	"github.com/kopia/kopia/repo/maintenance"
+	"github.com/kopia/kopia/snapshot/restore"
 	"github.com/kopia/kopia/snapshot/snapshotmaintenance"
 )
 
@@ -63,11 +64,11 @@ func (o *textOutput) stderr() io.Writer {
 }
 
 func (o *textOutput) printStdout(msg string, args ...interface{}) {
-	fmt.Fprintf(o.stdout(), msg, args...)
+	fmt.Fprintf(o.stdout(), msg, args...) //nolint:errcheck
 }
 
 func (o *textOutput) printStderr(msg string, args ...interface{}) {
-	fmt.Fprintf(o.stderr(), msg, args...)
+	fmt.Fprintf(o.stderr(), msg, args...) //nolint:errcheck
 }
 
 // appServices are the methods of *App that command handles are allowed to call.
@@ -86,10 +87,12 @@ type appServices interface {
 	advancedCommand(ctx context.Context)
 	repositoryConfigFileName() string
 	getProgress() *cliProgress
+	getRestoreProgress() restore.Progress
+
 	stdout() io.Writer
 	Stderr() io.Writer
 	stdin() io.Reader
-	onCtrlC(callback func())
+	onTerminate(callback func())
 	onRepositoryFatalError(callback func(err error))
 	enableTestOnlyFlags() bool
 	EnvName(s string) string
@@ -117,6 +120,7 @@ type App struct {
 	enableAutomaticMaintenance    bool
 	pf                            profileFlags
 	progress                      *cliProgress
+	restoreProgress               restore.Progress
 	initialUpdateCheckDelay       time.Duration
 	updateCheckInterval           time.Duration
 	updateAvailableNotifyInterval time.Duration
@@ -179,6 +183,15 @@ func (c *App) enableTestOnlyFlags() bool {
 
 func (c *App) getProgress() *cliProgress {
 	return c.progress
+}
+
+// SetRestoreProgress is used to set custom restore progress, purposed to be used in tests.
+func (c *App) SetRestoreProgress(p restore.Progress) {
+	c.restoreProgress = p
+}
+
+func (c *App) getRestoreProgress() restore.Progress {
+	return c.restoreProgress
 }
 
 func (c *App) stdin() io.Reader {
@@ -280,6 +293,10 @@ func (c *App) setup(app *kingpin.Application) {
 	c.pf.setup(app)
 	c.progress.setup(c, app)
 
+	if rp, ok := c.restoreProgress.(*cliRestoreProgress); ok {
+		rp.setup(c, app)
+	}
+
 	c.blob.setup(c, app)
 	c.benchmark.setup(c, app)
 	c.cache.setup(c, app)
@@ -308,7 +325,8 @@ type commandParent interface {
 // NewApp creates a new instance of App.
 func NewApp() *App {
 	return &App{
-		progress: &cliProgress{},
+		progress:        &cliProgress{},
+		restoreProgress: &cliRestoreProgress{},
 		cliStorageProviders: []StorageProvider{
 			{"from-config", "the provided configuration file", func() StorageFlags { return &storageFromConfigFlags{} }},
 
@@ -328,9 +346,9 @@ func NewApp() *App {
 		exitWithError: func(err error) {
 			if err != nil {
 				os.Exit(1)
-			} else {
-				os.Exit(0)
 			}
+
+			os.Exit(0)
 		},
 		stdoutWriter: colorable.NewColorableStdout(),
 		stderrWriter: colorable.NewColorableStderr(),
@@ -365,7 +383,7 @@ func safetyFlagVar(cmd *kingpin.CmdClause, result *maintenance.SafetyParameters)
 		"full": maintenance.SafetyFull,
 	}
 
-	cmd.Flag("safety", "Safety level").Default("full").PreAction(func(pc *kingpin.ParseContext) error {
+	cmd.Flag("safety", "Safety level").Default("full").PreAction(func(_ *kingpin.ParseContext) error {
 		r, ok := safetyByName[str]
 		if !ok {
 			return errors.Errorf("unhandled safety level")
@@ -432,7 +450,6 @@ func assertDirectRepository(act func(ctx context.Context, rep repo.DirectReposit
 
 func (c *App) directRepositoryWriteAction(act func(ctx context.Context, rep repo.DirectRepositoryWriter) error) func(ctx *kingpin.ParseContext) error {
 	return c.maybeRepositoryAction(assertDirectRepository(func(ctx context.Context, rep repo.DirectRepository) error {
-		//nolint:wrapcheck
 		return repo.DirectWriteSession(ctx, rep, repo.WriteSessionOptions{
 			Purpose:  "cli:" + c.currentActionName(),
 			OnUpload: c.progress.UploadedBytes,
@@ -463,7 +480,6 @@ func (c *App) repositoryReaderAction(act func(ctx context.Context, rep repo.Repo
 
 func (c *App) repositoryWriterAction(act func(ctx context.Context, rep repo.RepositoryWriter) error) func(ctx *kingpin.ParseContext) error {
 	return c.maybeRepositoryAction(func(ctx context.Context, rep repo.Repository) error {
-		//nolint:wrapcheck
 		return repo.WriteSession(ctx, rep, repo.WriteSessionOptions{
 			Purpose:  "cli:" + c.currentActionName(),
 			OnUpload: c.progress.UploadedBytes,
@@ -578,7 +594,6 @@ func (c *App) maybeRunMaintenance(ctx context.Context, rep repo.Repository) erro
 		Purpose:  "maybeRunMaintenance",
 		OnUpload: c.progress.UploadedBytes,
 	}, func(ctx context.Context, w repo.DirectRepositoryWriter) error {
-		//nolint:wrapcheck
 		return snapshotmaintenance.Run(ctx, w, maintenance.ModeAuto, false, maintenance.SafetyFull)
 	})
 

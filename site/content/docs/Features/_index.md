@@ -13,7 +13,7 @@ weight: 10
 * [Error Correction](#error-correction)
 * [Verifying Backup Validity and Consistency](#verifying-backup-validity-and-consistency)
 * [Recovering Backed Up Data When There is Data Loss](#recovering-backed-up-data-when-there-is-data-loss)
-* [Regular Automatic Maintence of Repositories](#regular-automatic-maintence-of-repositories)
+* [Regular Automatic Maintenance of Repositories](#regular-automatic-maintenance-of-repositories)
 * [Caching](#caching)
 * [Both Command Line and Graphical User Interfaces](#both-command-line-and-graphical-user-interfaces)
 * [Optional Server Mode with API Support to Centrally Manage Backups of Multiple Machines](#optional-server-mode-with-api-support-to-centrally-manage-backups-of-multiple-machines)
@@ -40,7 +40,7 @@ Kopia uses [content-addressable storage](https://en.wikipedia.org/wiki/Content-a
 Kopia allows you to create an unlimited number of policies for each repository. Policies allow you to define what files/directories to backup in a snapshot and other features of a snapshot, including but not limited to:
 
 * how frequently/when Kopia should automatically create snapshots of your data
-* whether to exclude certain files/directories from snapshots, similar to `.gitignore`
+* whether to exclude [certain files/directories](../advanced/kopiaignore/) from snapshots
 * how long to retain a snapshot before expiring it and removing it from the repository
 * whether and how to compress the files/directories being backed up
 
@@ -112,9 +112,9 @@ Backing up data is great, but you also need to be able to restore that data when
 
 Although never guaranteed, Kopia can often recover your files even if there is some partial data loss at your repository (e.g., a hard drive failure), because key index information and repository metadata is stored redundantly to prevent single points of failure. Note that Kopia cannot recover data where the actual backed up data file in the repository is corrupt, so make sure to regularly run repository consistency checks (see above discussion)!
 
-### Regular Automatic Maintence of Repositories
+### Regular Automatic Maintenance of Repositories
 
-Over time, repositories can get bloated to the point of decreased performance and waste of storage space. Kopia runs automatic maintence that ensures optimal performance and space usage. Read the [maintenance](../advanced/maintenance/) help docs for more information.
+Over time, repositories can get bloated to the point of decreased performance and waste of storage space. Kopia runs automatic maintenance that ensures optimal performance and space usage. Read the [maintenance](../advanced/maintenance/) help docs for more information.
 
 ### Caching
 
@@ -132,4 +132,4 @@ Kopia is designed to backup individual machines and you absolutely do not need a
 
 ### Speed
 
-Kopia. Is. [Fast](https://www.kasten.io/kubernetes/resources/blog/benchmarking-kopia-architecture-scale-and-performance).
+Kopia. Is. [Fast](https://web.archive.org/web/20231202012341/https://www.kasten.io/kubernetes/resources/blog/benchmarking-kopia-architecture-scale-and-performance).

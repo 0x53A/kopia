@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/kopia/kopia/internal/blobcrypto"
 	"github.com/kopia/kopia/internal/blobtesting"
 	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/faketime"
@@ -65,14 +66,12 @@ func TestIndexBlobManager(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
-
 		t.Run(fmt.Sprintf("%v", tc), func(t *testing.T) {
 			// fake underlying blob store with fake time
 			storageData := blobtesting.DataMap{}
 
-			fakeLocalTime := faketime.NewTimeAdvance(fakeLocalStartTime, 0)
-			fakeStorageTime := faketime.NewTimeAdvance(fakeStoreStartTime, 0)
+			fakeLocalTime := faketime.NewTimeAdvance(fakeLocalStartTime)
+			fakeStorageTime := faketime.NewTimeAdvance(fakeStoreStartTime)
 
 			st := blobtesting.NewMapStorage(storageData, nil, fakeStorageTime.NowFunc())
 			st = blobtesting.NewEventuallyConsistentStorage(st, testEventualConsistencySettleTime, fakeStorageTime.NowFunc())
@@ -167,8 +166,6 @@ func TestIndexBlobManagerStress(t *testing.T) {
 		return
 	}
 
-	rand.Seed(clock.Now().UnixNano())
-
 	for i := range actionsTestIndexBlobManagerStress {
 		actionsTestIndexBlobManagerStress[i].weight = rand.Intn(100)
 		t.Logf("weight[%v] = %v", i, actionsTestIndexBlobManagerStress[i].weight)
@@ -197,8 +194,7 @@ func TestIndexBlobManagerStress(t *testing.T) {
 
 	numActors := 2
 
-	for actorID := 0; actorID < numActors; actorID++ {
-		actorID := actorID
+	for actorID := range numActors {
 		loggedSt := logging.NewWrapper(st, testlogging.Printf(func(m string, args ...interface{}) {
 			t.Logf(fmt.Sprintf("@%v actor[%v]:", fakeTimeFunc().Format("150405.000"), actorID)+m, args...)
 		}, ""), "")
@@ -268,8 +264,6 @@ func TestIndexBlobManagerStress(t *testing.T) {
 }
 
 func TestIndexBlobManagerPreventsResurrectOfDeletedContents(t *testing.T) {
-	rand.Seed(clock.Now().UnixNano())
-
 	// the test is randomized and runs very quickly, run it lots of times
 	failed := false
 	for i := 0; i < 100 && !failed; i++ {
@@ -282,11 +276,9 @@ func TestIndexBlobManagerPreventsResurrectOfDeletedContents(t *testing.T) {
 }
 
 func TestCompactionCreatesPreviousIndex(t *testing.T) {
-	rand.Seed(clock.Now().UnixNano())
-
 	storageData := blobtesting.DataMap{}
 
-	fakeTime := faketime.NewTimeAdvance(fakeLocalStartTime, 0)
+	fakeTime := faketime.NewTimeAdvance(fakeLocalStartTime)
 	fakeTimeFunc := fakeTime.NowFunc()
 
 	st := blobtesting.NewMapStorage(storageData, nil, fakeTimeFunc)
@@ -333,15 +325,13 @@ func TestCompactionCreatesPreviousIndex(t *testing.T) {
 }
 
 func TestIndexBlobManagerPreventsResurrectOfDeletedContents_RandomizedTimings(t *testing.T) {
-	rand.Seed(clock.Now().UnixNano())
-
 	numAttempts := 1000
 	if testutil.ShouldReduceTestComplexity() {
 		numAttempts = 100
 	}
 
 	// the test is randomized and runs very quickly, run it lots of times
-	for i := 0; i < numAttempts; i++ {
+	for i := range numAttempts {
 		t.Run(fmt.Sprintf("attempt-%v", i), func(t *testing.T) {
 			verifyIndexBlobManagerPreventsResurrectOfDeletedContents(
 				t,
@@ -355,8 +345,8 @@ func TestIndexBlobManagerPreventsResurrectOfDeletedContents_RandomizedTimings(t 
 	}
 }
 
-func randomDuration(max time.Duration) time.Duration {
-	return time.Duration(float64(max) * rand.Float64())
+func randomDuration(maxDuration time.Duration) time.Duration {
+	return time.Duration(float64(maxDuration) * rand.Float64())
 }
 
 func verifyIndexBlobManagerPreventsResurrectOfDeletedContents(t *testing.T, delay1, delay2, delay3, delay4, delay5 time.Duration) {
@@ -366,7 +356,7 @@ func verifyIndexBlobManagerPreventsResurrectOfDeletedContents(t *testing.T, dela
 
 	storageData := blobtesting.DataMap{}
 
-	fakeTime := faketime.NewTimeAdvance(fakeLocalStartTime, 0)
+	fakeTime := faketime.NewTimeAdvance(fakeLocalStartTime)
 	fakeTimeFunc := fakeTime.NowFunc()
 
 	st := blobtesting.NewMapStorage(storageData, nil, fakeTimeFunc)
@@ -442,7 +432,7 @@ func verifyFakeContentsWritten(ctx context.Context, t *testing.T, m *ManagerV0, 
 	}
 
 	// verify that all contents previously written can be read.
-	for i := 0; i < numWritten; i++ {
+	for i := range numWritten {
 		id := fakeContentID(contentPrefix, i)
 		if _, ok := all[id]; !ok {
 			if deletedContents[id] {
@@ -530,7 +520,7 @@ func deleteFakeContents(ctx context.Context, t *testing.T, m *ManagerV0, prefix 
 
 	ndx := map[string]fakeContentIndexEntry{}
 
-	for i := 0; i < count; i++ {
+	for range count {
 		n := fakeContentID(prefix, rand.Intn(numWritten))
 		if deleted[n] {
 			continue
@@ -599,7 +589,7 @@ func writeFakeContents(ctx context.Context, t *testing.T, m *ManagerV0, prefix s
 
 	ndx := map[string]fakeContentIndexEntry{}
 
-	for i := 0; i < count; i++ {
+	for range count {
 		n := fakeContentID(prefix, *numWritten)
 		ndx[n] = fakeContentIndexEntry{
 			ModTime: timeFunc(),
@@ -796,7 +786,7 @@ func newIndexBlobManagerForTesting(t *testing.T, st blob.Storage, localTimeNow f
 		enc: &EncryptionManager{
 			st:             st,
 			indexBlobCache: nil,
-			crypter:        staticCrypter{hf, enc},
+			crypter:        blobcrypto.StaticCrypter{Hash: hf, Encryption: enc},
 			log:            log,
 		},
 		timeNow: localTimeNow,

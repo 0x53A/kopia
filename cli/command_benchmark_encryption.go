@@ -69,8 +69,8 @@ func (c *commandBenchmarkEncryption) runBenchmark(ctx context.Context) []cryptoB
 		enc, err := encryption.CreateEncryptor(&format.ContentFormat{
 			Encryption: ea,
 			Hash:       hashing.DefaultAlgorithm,
-			MasterKey:  make([]byte, 32), //nolint:gomnd
-			HMACSecret: make([]byte, 32), //nolint:gomnd
+			MasterKey:  make([]byte, 32), //nolint:mnd
+			HMACSecret: make([]byte, 32), //nolint:mnd
 		})
 		if err != nil {
 			continue
@@ -83,13 +83,13 @@ func (c *commandBenchmarkEncryption) runBenchmark(ctx context.Context) []cryptoB
 
 		hashCount := c.repeat
 
-		runInParallelNoResult(c.parallel, func() {
+		runInParallelNoInputNoResult(c.parallel, func() {
 			var hashOutput [hashing.MaxHashSize]byte
 
 			var encryptOutput gather.WriteBuffer
 			defer encryptOutput.Close()
 
-			for i := 0; i < hashCount; i++ {
+			for range hashCount {
 				if encerr := enc.Encrypt(input, hashOutput[:32], &encryptOutput); encerr != nil {
 					log(ctx).Errorf("encryption failed: %v", encerr)
 					break

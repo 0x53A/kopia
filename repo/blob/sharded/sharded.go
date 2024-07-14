@@ -22,7 +22,7 @@ const CompleteBlobSuffix = ".f"
 
 var log = logging.Module("sharded") // +checklocksignore
 
-// Impl must be implemented by underlying provided.
+// Impl must be implemented by underlying provider.
 type Impl interface {
 	GetBlobFromPath(ctx context.Context, dirPath, filePath string, offset, length int64, output blob.OutputBuffer) error
 	GetMetadataFromPath(ctx context.Context, dirPath, filePath string) (blob.Metadata, error)
@@ -72,7 +72,7 @@ func (s *Storage) ListBlobs(ctx context.Context, prefix blob.ID, callback func(b
 	pw := parallelwork.NewQueue()
 
 	// channel to which pw will write blob.Metadata, some buf
-	result := make(chan blob.Metadata, 128) //nolint:gomnd
+	result := make(chan blob.Metadata, 128) //nolint:mnd
 
 	finished := make(chan struct{})
 	defer close(finished)

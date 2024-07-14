@@ -33,6 +33,11 @@ type committedManifestManager struct {
 	committedEntries map[ID]*manifestEntry
 	// +checklocks:cmmu
 	committedContentIDs map[content.ID]bool
+
+	// autoCompactionThreshold controls the threshold after which the manager auto-compacts
+	// manifest contents
+	// +checklocks:cmmu
+	autoCompactionThreshold int
 }
 
 func (m *committedManifestManager) getCommittedEntryOrNil(ctx context.Context, id ID) (*manifestEntry, error) {
@@ -143,21 +148,23 @@ func (m *committedManifestManager) loadCommittedContentsLocked(ctx context.Conte
 			Range:    index.PrefixRange(ContentPrefix),
 			Parallel: manifestLoadParallelism,
 		}, func(ci content.Info) error {
-			man, err := loadManifestContent(ctx, m.b, ci.GetContentID())
+			man, err := loadManifestContent(ctx, m.b, ci.ContentID)
 			if err != nil {
 				// this can be used to allow corrupterd repositories to still open and see the
 				// (incomplete) list of manifests.
 				if os.Getenv("KOPIA_IGNORE_MALFORMED_MANIFEST_CONTENTS") != "" {
-					log(ctx).Warnf("ignoring malformed manifest content %v: %v", ci.GetContentID(), err)
+					log(ctx).Warnf("ignoring malformed manifest content %v: %v", ci.ContentID, err)
 
 					return nil
 				}
 
 				return err
 			}
+
 			mu.Lock()
-			manifests[ci.GetContentID()] = man
+			manifests[ci.ContentID] = man
 			mu.Unlock()
+
 			return nil
 		})
 		if err == nil {
@@ -176,7 +183,7 @@ func (m *committedManifestManager) loadCommittedContentsLocked(ctx context.Conte
 	m.loadManifestContentsLocked(manifests)
 
 	if err := m.maybeCompactLocked(ctx); err != nil {
-		return errors.Errorf("error auto-compacting contents")
+		return errors.Wrap(err, "error auto-compacting contents")
 	}
 
 	return nil
@@ -216,7 +223,9 @@ func (m *committedManifestManager) compact(ctx context.Context) error {
 func (m *committedManifestManager) maybeCompactLocked(ctx context.Context) error {
 	m.verifyLocked()
 
-	if len(m.committedContentIDs) < autoCompactionContentCount {
+	// Don't attempt to compact manifests if the repo was opened in read only mode
+	// since we'll just end up failing.
+	if m.b.IsReadOnly() || len(m.committedContentIDs) < m.autoCompactionThreshold {
 		return nil
 	}
 
@@ -346,23 +355,26 @@ func loadManifestContent(ctx context.Context, b contentManager, contentID conten
 		return man, errors.Wrapf(err, "unable to unpack manifest data %q", contentID)
 	}
 
-	if err := json.NewDecoder(gz).Decode(&man); err != nil {
-		return man, errors.Wrapf(err, "unable to parse manifest %q", contentID)
-	}
+	// Will be GC-ed even if we don't close it?
+	//nolint:errcheck
+	defer gz.Close()
 
-	return man, nil
+	man, err = decodeManifestArray(gz)
+
+	return man, errors.Wrapf(err, "unable to parse manifest %q", contentID)
 }
 
-func newCommittedManager(b contentManager) *committedManifestManager {
+func newCommittedManager(b contentManager, autoCompactionThreshold int) *committedManifestManager {
 	debugID := ""
 	if os.Getenv("KOPIA_DEBUG_MANIFEST_MANAGER") != "" {
 		debugID = fmt.Sprintf("%x", rand.Int63()) //nolint:gosec
 	}
 
 	return &committedManifestManager{
-		b:                   b,
-		debugID:             debugID,
-		committedEntries:    map[ID]*manifestEntry{},
-		committedContentIDs: map[content.ID]bool{},
+		b:                       b,
+		debugID:                 debugID,
+		committedEntries:        map[ID]*manifestEntry{},
+		committedContentIDs:     map[content.ID]bool{},
+		autoCompactionThreshold: autoCompactionThreshold,
 	}
 }

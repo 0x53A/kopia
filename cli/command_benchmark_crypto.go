@@ -70,8 +70,8 @@ func (c *commandBenchmarkCrypto) runBenchmark(ctx context.Context) []cryptoBench
 			fo := &format.ContentFormat{
 				Encryption: ea,
 				Hash:       ha,
-				MasterKey:  make([]byte, 32), //nolint:gomnd
-				HMACSecret: make([]byte, 32), //nolint:gomnd
+				MasterKey:  make([]byte, 32), //nolint:mnd
+				HMACSecret: make([]byte, 32), //nolint:mnd
 			}
 
 			hf, err := hashing.CreateHashFunc(fo)
@@ -91,13 +91,13 @@ func (c *commandBenchmarkCrypto) runBenchmark(ctx context.Context) []cryptoBench
 
 			hashCount := c.repeat
 
-			runInParallelNoResult(c.parallel, func() {
+			runInParallelNoInputNoResult(c.parallel, func() {
 				var hashOutput [hashing.MaxHashSize]byte
 
 				var encryptOutput gather.WriteBuffer
 				defer encryptOutput.Close()
 
-				for i := 0; i < hashCount; i++ {
+				for range hashCount {
 					contentID := hf(hashOutput[:0], input)
 
 					if encerr := enc.Encrypt(input, contentID, &encryptOutput); encerr != nil {

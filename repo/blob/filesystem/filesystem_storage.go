@@ -34,6 +34,7 @@ const (
 
 type fsStorage struct {
 	sharded.Storage
+	blob.DefaultProviderImplementation
 }
 
 type fsImpl struct {
@@ -51,7 +52,7 @@ func (fs *fsImpl) isRetriable(err error) bool {
 
 	err = errors.Cause(err)
 
-	if fs.osi.IsESTALE(err) {
+	if fs.osi.IsStale(err) {
 		// errors indicative of stale resource handle or invalid
 		// descriptors should not be retried
 		return false
@@ -77,6 +78,8 @@ func (fs *fsImpl) isRetriable(err error) bool {
 }
 
 func (fs *fsImpl) GetBlobFromPath(ctx context.Context, dirPath, path string, offset, length int64, output blob.OutputBuffer) error {
+	_ = dirPath
+
 	err := retry.WithExponentialBackoffNoValue(ctx, "GetBlobFromPath:"+path, func() error {
 		output.Reset()
 
@@ -89,7 +92,6 @@ func (fs *fsImpl) GetBlobFromPath(ctx context.Context, dirPath, path string, off
 		defer f.Close() //nolint:errcheck
 
 		if length < 0 {
-			//nolint:wrapcheck
 			return iocopy.JustCopy(output, f)
 		}
 
@@ -131,6 +133,8 @@ func (fs *fsImpl) GetBlobFromPath(ctx context.Context, dirPath, path string, off
 }
 
 func (fs *fsImpl) GetMetadataFromPath(ctx context.Context, dirPath, path string) (blob.Metadata, error) {
+	_ = dirPath
+
 	//nolint:wrapcheck
 	return retry.WithExponentialBackoff(ctx, "GetMetadataFromPath:"+path, func() (blob.Metadata, error) {
 		fi, err := fs.osi.Stat(path)
@@ -152,6 +156,8 @@ func (fs *fsImpl) GetMetadataFromPath(ctx context.Context, dirPath, path string)
 
 //nolint:wrapcheck,gocyclo
 func (fs *fsImpl) PutBlobInPath(ctx context.Context, dirPath, path string, data blob.Bytes, opts blob.PutOptions) error {
+	_ = dirPath
+
 	switch {
 	case opts.HasRetentionOptions():
 		return errors.Wrap(blob.ErrUnsupportedPutBlobOption, "blob-retention")
@@ -197,7 +203,7 @@ func (fs *fsImpl) PutBlobInPath(ctx context.Context, dirPath, path string, data 
 		}
 
 		if t := opts.SetModTime; !t.IsZero() {
-			if chtimesErr := fs.osi.Chtimes(path, t, t); err != nil {
+			if chtimesErr := fs.osi.Chtimes(path, t, t); chtimesErr != nil {
 				return errors.Wrapf(chtimesErr, "can't change file %q times", path)
 			}
 		}
@@ -235,6 +241,8 @@ func (fs *fsImpl) createTempFileAndDir(tempFile string) (osWriteFile, error) {
 }
 
 func (fs *fsImpl) DeleteBlobInPath(ctx context.Context, dirPath, path string) error {
+	_ = dirPath
+
 	//nolint:wrapcheck
 	return retry.WithExponentialBackoffNoValue(ctx, "DeleteBlobInPath:"+path, func() error {
 		err := fs.osi.Remove(path)
@@ -279,9 +287,11 @@ func (fs *fsImpl) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, e
 }
 
 // TouchBlob updates file modification time to current time if it's sufficiently old.
-func (fs *fsStorage) TouchBlob(ctx context.Context, blobID blob.ID, threshold time.Duration) error {
-	//nolint:wrapcheck
-	return retry.WithExponentialBackoffNoValue(ctx, "TouchBlob", func() error {
+func (fs *fsStorage) TouchBlob(ctx context.Context, blobID blob.ID, threshold time.Duration) (time.Time, error) {
+	var mtime time.Time
+
+	//nolint:wrapcheck,forcetypeassert
+	err := retry.WithExponentialBackoffNoValue(ctx, "TouchBlob", func() error {
 		_, path, err := fs.Storage.GetShardedPathAndFilePath(ctx, blobID)
 		if err != nil {
 			return errors.Wrap(err, "error getting sharded path")
@@ -296,17 +306,20 @@ func (fs *fsStorage) TouchBlob(ctx context.Context, blobID blob.ID, threshold ti
 		}
 
 		n := clock.Now()
+		mtime = st.ModTime()
 
-		age := n.Sub(st.ModTime())
+		age := n.Sub(mtime)
 		if age < threshold {
 			return nil
 		}
 
-		log(ctx).Debugf("updating timestamp on %v to %v", path, n)
+		mtime = n
 
 		//nolint:wrapcheck
 		return osi.Chtimes(path, n, n)
-	}, fs.Impl.(*fsImpl).isRetriable) //nolint:forcetypeassert
+	}, fs.Impl.(*fsImpl).isRetriable)
+
+	return mtime, err
 }
 
 func (fs *fsStorage) ConnectionInfo() blob.ConnectionInfo {
@@ -318,14 +331,6 @@ func (fs *fsStorage) ConnectionInfo() blob.ConnectionInfo {
 
 func (fs *fsStorage) DisplayName() string {
 	return fmt.Sprintf("Filesystem: %v", fs.RootPath)
-}
-
-func (fs *fsStorage) Close(ctx context.Context) error {
-	return nil
-}
-
-func (fs *fsStorage) FlushCaches(ctx context.Context) error {
-	return nil
 }
 
 // New creates new filesystem-backed storage in a specified directory.
@@ -350,7 +355,7 @@ func New(ctx context.Context, opts *Options, isCreate bool) (blob.Storage, error
 	}
 
 	return &fsStorage{
-		sharded.New(&fsImpl{*opts, osi}, opts.Path, opts.Options, isCreate),
+		Storage: sharded.New(&fsImpl{*opts, osi}, opts.Path, opts.Options, isCreate),
 	}, nil
 }
 

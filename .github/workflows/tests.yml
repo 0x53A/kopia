@@ -37,10 +37,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ contains(matrix.os, 'self-hosted') }}
     steps:
-    - name: Set up Go.
-      uses: actions/setup-go@v3
+    - name: Check out repository
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       with:
-        go-version: '1.19'
+        fetch-depth: 0
+    - name: Set up Go
+      uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+      with:
+        go-version-file: 'go.mod'
+        check-latest: true
       id: go
       if: ${{ !contains(matrix.os, 'ARMHF') }}
     - name: Install GoLang for ARMHF
@@ -52,10 +57,6 @@ jobs:
     - name: Install macOS-specific packages
       run: "sudo xcode-select -r"
       if: ${{ contains(matrix.os, 'macos') }}
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
     - name: Setup
       run: make -j4 ci-setup
     - name: Tests
@@ -63,9 +64,9 @@ jobs:
     - name: Integration Tests
       run: make -j2 ci-integration-tests
     - name: Upload Logs
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@0b2256b8c012f0828dc542b3febcab082c67f72b # v4.3.4
       with:
-        name: logs
+        name: logs-${{ matrix.os }}
         path: .logs/**/*.log
         if-no-files-found: ignore
       if: ${{ always() }}

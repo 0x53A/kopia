@@ -18,7 +18,7 @@ import (
 	"github.com/kopia/kopia/internal/listcache"
 	"github.com/kopia/kopia/internal/metrics"
 	"github.com/kopia/kopia/internal/ownwrites"
-	"github.com/kopia/kopia/internal/repolog"
+	"github.com/kopia/kopia/internal/repodiag"
 	"github.com/kopia/kopia/internal/timetrack"
 	"github.com/kopia/kopia/repo/blob"
 	"github.com/kopia/kopia/repo/blob/filesystem"
@@ -67,7 +67,7 @@ var allIndexBlobPrefixes = []blob.ID{
 
 // IndexBlobReader provides an API for reading index blobs.
 type IndexBlobReader interface {
-	ListIndexBlobInfos(context.Context) ([]indexblob.Metadata, time.Time, error)
+	ListIndexBlobInfos(ctx context.Context) ([]indexblob.Metadata, time.Time, error)
 }
 
 // SharedManager is responsible for read-only access to committed data.
@@ -87,7 +87,8 @@ type SharedManager struct {
 	// lock to protect the set of committed indexes
 	// shared lock will be acquired when writing new content to allow it to happen in parallel
 	// exclusive lock will be acquired during compaction or refresh.
-	indexesLock sync.RWMutex
+	indexesLock            sync.RWMutex
+	permissiveCacheLoading bool
 
 	// maybeRefreshIndexes() will call Refresh() after this point in ime.
 	// +checklocks:indexesLock
@@ -105,10 +106,16 @@ type SharedManager struct {
 
 	// logger associated with the context that opened the repository.
 	contextLogger  logging.Logger
-	repoLogManager *repolog.LogManager
+	repoLogManager *repodiag.LogManager
 	internalLogger *zap.SugaredLogger // backing logger for 'sharedBaseLogger'
 
 	metricsStruct
+}
+
+// IsReadOnly returns whether this instance of the SharedManager only supports
+// reads or if it also supports mutations to the index.
+func (sm *SharedManager) IsReadOnly() bool {
+	return sm.st.IsReadOnly()
 }
 
 // LoadIndexBlob return index information loaded from the specified blob.
@@ -194,10 +201,10 @@ func (sm *SharedManager) attemptReadPackFileLocalIndex(ctx context.Context, pack
 
 // +checklocks:sm.indexesLock
 func (sm *SharedManager) loadPackIndexesLocked(ctx context.Context) error {
-	nextSleepTime := 100 * time.Millisecond //nolint:gomnd
+	nextSleepTime := 100 * time.Millisecond //nolint:mnd
 
-	for i := 0; i < indexLoadAttempts; i++ {
-		ibm, err0 := sm.indexBlobManager()
+	for i := range indexLoadAttempts {
+		ibm, err0 := sm.indexBlobManager(ctx)
 		if err0 != nil {
 			return err0
 		}
@@ -228,7 +235,7 @@ func (sm *SharedManager) loadPackIndexesLocked(ctx context.Context) error {
 			indexBlobIDs = append(indexBlobIDs, b.BlobID)
 		}
 
-		err = sm.committedContents.fetchIndexBlobs(ctx, indexBlobIDs)
+		err = sm.committedContents.fetchIndexBlobs(ctx, sm.permissiveCacheLoading, indexBlobIDs)
 		if err == nil {
 			err = sm.committedContents.use(ctx, indexBlobIDs, ignoreDeletedBefore)
 			if err != nil {
@@ -260,17 +267,19 @@ func (sm *SharedManager) getCacheForContentID(id ID) cache.ContentCache {
 	return sm.contentCache
 }
 
-func (sm *SharedManager) indexBlobManager() (indexblob.Manager, error) {
-	mp, mperr := sm.format.GetMutableParameters()
+// indexBlobManager return the index manager for content.
+func (sm *SharedManager) indexBlobManager(ctx context.Context) (indexblob.Manager, error) {
+	mp, mperr := sm.format.GetMutableParameters(ctx)
 	if mperr != nil {
 		return nil, errors.Wrap(mperr, "mutable parameters")
 	}
 
+	var q indexblob.Manager = sm.indexBlobManagerV0
 	if mp.EpochParameters.Enabled {
-		return sm.indexBlobManagerV1, nil
+		q = sm.indexBlobManagerV1
 	}
 
-	return sm.indexBlobManagerV0, nil
+	return q, nil
 }
 
 func (sm *SharedManager) decryptContentAndVerify(payload gather.Bytes, bi Info, output *gather.WriteBuffer) error {
@@ -278,25 +287,25 @@ func (sm *SharedManager) decryptContentAndVerify(payload gather.Bytes, bi Info, 
 
 	var hashBuf [hashing.MaxHashSize]byte
 
-	iv := getPackedContentIV(hashBuf[:0], bi.GetContentID())
+	iv := getPackedContentIV(hashBuf[:0], bi.ContentID)
 
 	// reserved for future use
-	if k := bi.GetEncryptionKeyID(); k != 0 {
+	if k := bi.EncryptionKeyID; k != 0 {
 		return errors.Errorf("unsupported encryption key ID: %v", k)
 	}
 
-	h := bi.GetCompressionHeaderID()
+	h := bi.CompressionHeaderID
 	if h == 0 {
 		return errors.Wrapf(
 			sm.decryptAndVerify(payload, iv, output),
-			"invalid checksum at %v offset %v length %v/%v", bi.GetPackBlobID(), bi.GetPackOffset(), bi.GetPackedLength(), payload.Length())
+			"invalid checksum at %v offset %v length %v/%v", bi.PackBlobID, bi.PackOffset, bi.PackedLength, payload.Length())
 	}
 
 	var tmp gather.WriteBuffer
 	defer tmp.Close()
 
 	if err := sm.decryptAndVerify(payload, iv, &tmp); err != nil {
-		return errors.Wrapf(err, "invalid checksum at %v offset %v length %v/%v", bi.GetPackBlobID(), bi.GetPackOffset(), bi.GetPackedLength(), payload.Length())
+		return errors.Wrapf(err, "invalid checksum at %v offset %v length %v/%v", bi.PackBlobID, bi.PackOffset, bi.PackedLength, payload.Length())
 	}
 
 	c := compression.ByHeaderID[h]
@@ -350,7 +359,7 @@ func (sm *SharedManager) IndexBlobs(ctx context.Context, includeInactive bool) (
 		return result, nil
 	}
 
-	ibm, err0 := sm.indexBlobManager()
+	ibm, err0 := sm.indexBlobManager(ctx)
 	if err0 != nil {
 		return nil, err0
 	}
@@ -411,23 +420,38 @@ func (sm *SharedManager) namedLogger(n string) logging.Logger {
 	return sm.contextLogger
 }
 
-func (sm *SharedManager) setupReadManagerCaches(ctx context.Context, caching *CachingOptions, mr *metrics.Registry) error {
+func contentCacheSweepSettings(caching *CachingOptions) cache.SweepSettings {
+	return cache.SweepSettings{
+		MaxSizeBytes: caching.ContentCacheSizeBytes,
+		LimitBytes:   caching.ContentCacheSizeLimitBytes,
+		MinSweepAge:  caching.MinContentSweepAge.DurationOrDefault(DefaultDataCacheSweepAge),
+	}
+}
+
+func metadataCacheSizeSweepSettings(caching *CachingOptions) cache.SweepSettings {
+	return cache.SweepSettings{
+		MaxSizeBytes: caching.EffectiveMetadataCacheSizeBytes(),
+		LimitBytes:   caching.MetadataCacheSizeLimitBytes,
+		MinSweepAge:  caching.MinMetadataSweepAge.DurationOrDefault(DefaultMetadataCacheSweepAge),
+	}
+}
+
+func indexBlobCacheSweepSettings(caching *CachingOptions) cache.SweepSettings {
+	return cache.SweepSettings{
+		MaxSizeBytes: caching.EffectiveMetadataCacheSizeBytes(),
+		MinSweepAge:  caching.MinMetadataSweepAge.DurationOrDefault(DefaultMetadataCacheSweepAge),
+	}
+}
+
+func (sm *SharedManager) setupCachesAndIndexManagers(ctx context.Context, caching *CachingOptions, mr *metrics.Registry) error {
 	dataCache, err := cache.NewContentCache(ctx, sm.st, cache.Options{
 		BaseCacheDirectory: caching.CacheDirectory,
 		CacheSubDir:        "contents",
 		HMACSecret:         caching.HMACSecret,
-		Sweep: cache.SweepSettings{
-			MaxSizeBytes: caching.MaxCacheSizeBytes,
-			MinSweepAge:  caching.MinContentSweepAge.DurationOrDefault(DefaultDataCacheSweepAge),
-		},
+		Sweep:              contentCacheSweepSettings(caching),
 	}, mr)
 	if err != nil {
 		return errors.Wrap(err, "unable to initialize content cache")
-	}
-
-	metadataCacheSize := caching.MaxMetadataCacheSizeBytes
-	if metadataCacheSize == 0 && caching.MaxCacheSizeBytes > 0 {
-		metadataCacheSize = caching.MaxCacheSizeBytes
 	}
 
 	metadataCache, err := cache.NewContentCache(ctx, sm.st, cache.Options{
@@ -435,24 +459,22 @@ func (sm *SharedManager) setupReadManagerCaches(ctx context.Context, caching *Ca
 		CacheSubDir:        "metadata",
 		HMACSecret:         caching.HMACSecret,
 		FetchFullBlobs:     true,
-		Sweep: cache.SweepSettings{
-			MaxSizeBytes: metadataCacheSize,
-			MinSweepAge:  caching.MinMetadataSweepAge.DurationOrDefault(DefaultMetadataCacheSweepAge),
-		},
+		Sweep:              metadataCacheSizeSweepSettings(caching),
 	}, mr)
 	if err != nil {
 		return errors.Wrap(err, "unable to initialize metadata cache")
 	}
 
-	indexBlobStorage, err := cache.NewStorageOrNil(ctx, caching.CacheDirectory, metadataCacheSize, "index-blobs")
+	indexBlobStorage, err := cache.NewStorageOrNil(ctx, caching.CacheDirectory, caching.EffectiveMetadataCacheSizeBytes(), "index-blobs")
 	if err != nil {
 		return errors.Wrap(err, "unable to initialize index blob cache storage")
 	}
 
-	indexBlobCache, err := cache.NewPersistentCache(ctx, "index-blobs", indexBlobStorage, cacheprot.ChecksumProtection(caching.HMACSecret), cache.SweepSettings{
-		MaxSizeBytes: metadataCacheSize,
-		MinSweepAge:  caching.MinMetadataSweepAge.DurationOrDefault(DefaultMetadataCacheSweepAge),
-	}, mr)
+	indexBlobCache, err := cache.NewPersistentCache(ctx, "index-blobs",
+		indexBlobStorage,
+		cacheprot.ChecksumProtection(caching.HMACSecret),
+		indexBlobCacheSweepSettings(caching),
+		mr, sm.timeNow)
 	if err != nil {
 		return errors.Wrap(err, "unable to create index blob cache")
 	}
@@ -505,6 +527,7 @@ func (sm *SharedManager) setupReadManagerCaches(ctx context.Context, caching *Ca
 	sm.committedContents = newCommittedContentIndex(caching,
 		sm.format.Encryptor().Overhead,
 		sm.format,
+		sm.permissiveCacheLoading,
 		enc.GetEncryptedBlob,
 		sm.namedLogger("committed-content-index"),
 		caching.MinIndexSweepAge.DurationOrDefault(DefaultIndexCacheSweepAge))
@@ -516,8 +539,8 @@ type epochParameters struct {
 	prov format.Provider
 }
 
-func (p epochParameters) GetParameters() (*epoch.Parameters, error) {
-	mp, mperr := p.prov.GetMutableParameters()
+func (p epochParameters) GetParameters(ctx context.Context) (*epoch.Parameters, error) {
+	mp, mperr := p.prov.GetMutableParameters(ctx)
 	if mperr != nil {
 		return nil, errors.Wrap(mperr, "mutable parameters")
 	}
@@ -526,8 +549,8 @@ func (p epochParameters) GetParameters() (*epoch.Parameters, error) {
 }
 
 // EpochManager returns the epoch manager.
-func (sm *SharedManager) EpochManager() (*epoch.Manager, bool, error) {
-	ibm, err := sm.indexBlobManager()
+func (sm *SharedManager) EpochManager(ctx context.Context) (*epoch.Manager, bool, error) {
+	ibm, err := sm.indexBlobManager(ctx)
 	if err != nil {
 		return nil, false, err
 	}
@@ -554,13 +577,7 @@ func (sm *SharedManager) CloseShared(ctx context.Context) error {
 		sm.internalLogger.Sync() //nolint:errcheck
 	}
 
-	sm.repoLogManager.Close(ctx)
-
 	sm.indexBlobManagerV1.EpochManager().Flush()
-
-	if err := sm.st.Close(ctx); err != nil {
-		return errors.Wrap(err, "error closing storage")
-	}
 
 	return nil
 }
@@ -570,7 +587,9 @@ func (sm *SharedManager) CloseShared(ctx context.Context) error {
 func (sm *SharedManager) AlsoLogToContentLog(ctx context.Context) context.Context {
 	sm.repoLogManager.Enable()
 
-	return logging.AlsoLogTo(ctx, sm.log)
+	return logging.WithAdditionalLogger(ctx, func(_ string) logging.Logger {
+		return sm.log
+	})
 }
 
 func (sm *SharedManager) shouldRefreshIndexes() bool {
@@ -581,13 +600,13 @@ func (sm *SharedManager) shouldRefreshIndexes() bool {
 }
 
 // PrepareUpgradeToIndexBlobManagerV1 prepares the repository for migrating to IndexBlobManagerV1.
-func (sm *SharedManager) PrepareUpgradeToIndexBlobManagerV1(ctx context.Context, params epoch.Parameters) error {
+func (sm *SharedManager) PrepareUpgradeToIndexBlobManagerV1(ctx context.Context) error {
 	//nolint:wrapcheck
-	return sm.indexBlobManagerV1.PrepareUpgradeToIndexBlobManagerV1(ctx, params, sm.indexBlobManagerV0)
+	return sm.indexBlobManagerV1.PrepareUpgradeToIndexBlobManagerV1(ctx, sm.indexBlobManagerV0)
 }
 
 // NewSharedManager returns SharedManager that is used by SessionWriteManagers on top of a repository.
-func NewSharedManager(ctx context.Context, st blob.Storage, prov format.Provider, caching *CachingOptions, opts *ManagerOptions, mr *metrics.Registry) (*SharedManager, error) {
+func NewSharedManager(ctx context.Context, st blob.Storage, prov format.Provider, caching *CachingOptions, opts *ManagerOptions, repoLogManager *repodiag.LogManager, mr *metrics.Registry) (*SharedManager, error) {
 	opts = opts.CloneOrDefault()
 	if opts.TimeNow == nil {
 		opts.TimeNow = clock.Now
@@ -598,11 +617,12 @@ func NewSharedManager(ctx context.Context, st blob.Storage, prov format.Provider
 		Stats:                   new(Stats),
 		timeNow:                 opts.TimeNow,
 		format:                  prov,
+		permissiveCacheLoading:  opts.PermissiveCacheLoading,
 		minPreambleLength:       defaultMinPreambleLength,
 		maxPreambleLength:       defaultMaxPreambleLength,
 		paddingUnit:             defaultPaddingUnit,
 		checkInvariantsOnUnlock: os.Getenv("KOPIA_VERIFY_INVARIANTS") != "",
-		repoLogManager:          repolog.NewLogManager(ctx, st, prov),
+		repoLogManager:          repoLogManager,
 		contextLogger:           logging.Module(FormatLogModule)(ctx),
 
 		metricsStruct: initMetricsStruct(mr),
@@ -616,7 +636,7 @@ func NewSharedManager(ctx context.Context, st blob.Storage, prov format.Provider
 
 	caching = caching.CloneOrDefault()
 
-	if err := sm.setupReadManagerCaches(ctx, caching, mr); err != nil {
+	if err := sm.setupCachesAndIndexManagers(ctx, caching, mr); err != nil {
 		return nil, errors.Wrap(err, "error setting up read manager caches")
 	}
 

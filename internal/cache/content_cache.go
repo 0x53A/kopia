@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"time"
 
 	"github.com/pkg/errors"
 
@@ -28,6 +29,7 @@ type Options struct {
 	HMACSecret         []byte
 	FetchFullBlobs     bool
 	Sweep              SweepSettings
+	TimeNow            func() time.Time
 }
 
 type contentCacheImpl struct {
@@ -60,10 +62,8 @@ func (c *contentCacheImpl) GetContent(ctx context.Context, contentID string, blo
 }
 
 func (c *contentCacheImpl) getContentFromFullBlob(ctx context.Context, blobID blob.ID, offset, length int64, output *gather.WriteBuffer) error {
-	// acquire exclusive lock
-	mut := c.pc.GetFetchingMutex(string(blobID))
-	mut.Lock()
-	defer mut.Unlock()
+	c.pc.exclusiveLock(string(blobID))
+	defer c.pc.exclusiveUnlock(string(blobID))
 
 	// check again to see if we perhaps lost the race and the data is now in cache.
 	if c.pc.GetPartial(ctx, BlobIDCacheKey(blobID), offset, length, output) {
@@ -112,9 +112,8 @@ func (c *contentCacheImpl) fetchBlobInternal(ctx context.Context, blobID blob.ID
 
 func (c *contentCacheImpl) getContentFromFullOrPartialBlob(ctx context.Context, contentID string, blobID blob.ID, offset, length int64, output *gather.WriteBuffer) error {
 	// acquire shared lock on a blob, PrefetchBlob will acquire exclusive lock here.
-	mut := c.pc.GetFetchingMutex(string(blobID))
-	mut.RLock()
-	defer mut.RUnlock()
+	c.pc.sharedLock(string(blobID))
+	defer c.pc.sharedUnlock(string(blobID))
 
 	// see if we have the full blob cached by extracting a partial range.
 	if c.pc.GetPartial(ctx, BlobIDCacheKey(blobID), offset, length, output) {
@@ -122,9 +121,8 @@ func (c *contentCacheImpl) getContentFromFullOrPartialBlob(ctx context.Context, 
 	}
 
 	// acquire exclusive lock on the content
-	mut2 := c.pc.GetFetchingMutex(contentID)
-	mut2.Lock()
-	defer mut2.Unlock()
+	c.pc.exclusiveLock(contentID)
+	defer c.pc.exclusiveUnlock(contentID)
 
 	output.Reset()
 
@@ -159,9 +157,8 @@ func (c *contentCacheImpl) PrefetchBlob(ctx context.Context, blobID blob.ID) err
 	}
 
 	// acquire exclusive lock for the blob.
-	mut := c.pc.GetFetchingMutex(string(blobID))
-	mut.Lock()
-	defer mut.Unlock()
+	c.pc.exclusiveLock(string(blobID))
+	defer c.pc.exclusiveUnlock(string(blobID))
 
 	if c.pc.GetPartial(ctx, BlobIDCacheKey(blobID), 0, 1, &blobData) {
 		return nil
@@ -190,7 +187,7 @@ func NewContentCache(ctx context.Context, st blob.Storage, opt Options, mr *metr
 		}
 	}
 
-	pc, err := NewPersistentCache(ctx, opt.CacheSubDir, cacheStorage, cacheprot.ChecksumProtection(opt.HMACSecret), opt.Sweep, mr)
+	pc, err := NewPersistentCache(ctx, opt.CacheSubDir, cacheStorage, cacheprot.ChecksumProtection(opt.HMACSecret), opt.Sweep, mr, opt.TimeNow)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to create base cache")
 	}

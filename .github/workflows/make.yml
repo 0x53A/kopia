@@ -39,10 +39,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ contains(matrix.os, 'self-hosted') }}
     steps:
-    - name: Set up Go.
-      uses: actions/setup-go@v3
+    - name: Check out repository
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       with:
-        go-version: '1.19'
+        fetch-depth: 0
+    - name: Set up Go
+      uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+      with:
+        go-version-file: 'go.mod'
+        check-latest: true
       id: go
       if: ${{ !contains(matrix.os, 'ARMHF') }}
     - name: Install GoLang for ARMHF
@@ -54,10 +59,6 @@ jobs:
     - name: Install macOS-specific packages
       run: "sudo xcode-select -r"
       if: ${{ contains(matrix.os, 'macos') }}
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
     - name: Setup
       run: make -j4 ci-setup
     - name: Install macOS certificates
@@ -82,10 +83,13 @@ jobs:
       if: ${{ contains(matrix.os, 'windows') }}
     - name: Build 
       run: make ci-build
+      timeout-minutes: 40
       env:
-        # Apple ID and app-specific password for notarizaton, used by Electron Builder
-        APPLEID: ${{ secrets.APPLEID }}
-        APPLEIDPASS: ${{ secrets.APPLEIDPASS }}
+        # Apple credentials for notarizaton, used by Electron Builder
+        APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         KOPIA_UI_NOTARIZE: ${{ secrets.KOPIA_UI_NOTARIZE }}
 
         # tool to install Windows signing certificate
@@ -97,9 +101,9 @@ jobs:
         # macOS signing certificate (base64-encoded), used by Electron Builder
         MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
     - name: Upload Kopia Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@0b2256b8c012f0828dc542b3febcab082c67f72b # v4.3.4
       with:
-        name: kopia
+        name: kopia-${{ matrix.os }}
         path: |
           dist/*.md
           dist/*.rb
@@ -119,9 +123,9 @@ jobs:
         if-no-files-found: ignore
       if: ${{ !contains(matrix.os, 'self-hosted') }}
     - name: Upload Kopia Binary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@0b2256b8c012f0828dc542b3febcab082c67f72b # v4.3.4
       with:
-        name: kopia_binaries
+        name: kopia_binaries-${{ matrix.os }}
         path: |
           dist/*/kopia
           dist/*/kopia.exe
@@ -135,20 +139,24 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request' && github.repository == 'kopia/kopia'
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@v2
+      uses: docker/setup-qemu-action@5927c834f5b4fdf503fca6f4c7eccda82949e1ee # v3.1.0
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@4fd812986e6c8c2a69e18311145f9371337f27d4 # v3.4.0
+    - name: Install Linux-specific packages
+      run: "sudo apt-get install -y createrepo-c"
     - name: Download Artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
       with:
-        name: kopia
+        pattern: kopia-*
+        merge-multiple: true
         path: dist
     - name: Download Kopia Binaries
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
       with:
-        name: kopia_binaries
+        pattern: kopia_binaries-*
+        merge-multiple: true
         path: dist_binaries
     - name: Display structure of downloaded files
       run: ls -lR dist/ dist_binaries/
@@ -188,8 +196,10 @@ jobs:
         DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     - name: Bump Homebrew formula
-      uses: dawidd6/action-homebrew-bump-formula@v3
-      if: github.ref_type == 'tag'
+      uses: dawidd6/action-homebrew-bump-formula@baf2b60c51fc1f8453c884b0c61052668a71bd1d # v3.11.0
+      # only bump formula for tags which don't contain '-'
+      # this excludes vx.y.z-rc1
+      if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
       with:
         token: ${{ secrets.HOMEBREW_PUSH_TOKEN }}
         formula: kopia

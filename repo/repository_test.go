@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/internal/cache"
+	"github.com/kopia/kopia/internal/crypto"
 	"github.com/kopia/kopia/internal/epoch"
 	"github.com/kopia/kopia/internal/gather"
 	"github.com/kopia/kopia/internal/metricid"
@@ -38,9 +39,9 @@ func (s *formatSpecificTestSuite) TestWriters(t *testing.T) {
 	}{
 		{
 			[]byte("the quick brown fox jumps over the lazy dog"),
-			mustParseObjectID(t, "345acef0bcf82f1daf8e49fab7b7fac7ec296c518501eabea3645b99345a4e08"),
+			mustParseObjectID(t, "f65fc4107863281faaeb7087197c05ad59457362607330c665c86c852c5e5906"),
 		},
-		{make([]byte, 100), mustParseObjectID(t, "1d804f1f69df08f3f59070bf962de69433e3d61ac18522a805a84d8c92741340")}, // 100 zero bytes
+		{make([]byte, 100), mustParseObjectID(t, "bfa2b4b9421671ab2b5bfa8c90ee33607784a27e452b08556509ef9bd47a37c6")}, // 100 zero bytes
 	}
 
 	for _, c := range cases {
@@ -78,7 +79,7 @@ func (s *formatSpecificTestSuite) TestWriterCompleteChunkInTwoWrites(t *testing.
 	writer.Write(b[0:50])
 	result, err := writer.Result()
 
-	if result != mustParseObjectID(t, "1d804f1f69df08f3f59070bf962de69433e3d61ac18522a805a84d8c92741340") {
+	if result != mustParseObjectID(t, "bfa2b4b9421671ab2b5bfa8c90ee33607784a27e452b08556509ef9bd47a37c6") {
 		t.Errorf("unexpected result: %v err: %v", result, err)
 	}
 }
@@ -162,7 +163,7 @@ func (s *formatSpecificTestSuite) TestHMAC(t *testing.T) {
 	w.Write(c)
 	result, err := w.Result()
 
-	if result.String() != "367352007ee6ca9fa755ce8352347d092c17a24077fd33c62f655574a8cf906d" {
+	if result.String() != "e37e93ba74e074ad1366ee2f032ee9c3a5b81ec82c140b053c1a4e6673d5d9d9" {
 		t.Errorf("unexpected result: %v err: %v", result.String(), err)
 	}
 }
@@ -206,7 +207,7 @@ func verify(ctx context.Context, t *testing.T, rep repo.Repository, objectID obj
 		return
 	}
 
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		sampleSize := int(rand.Int31n(300))
 		seekOffset := int(rand.Int31n(int32(len(expectedData))))
 
@@ -251,8 +252,8 @@ func TestFormats(t *testing.T) {
 			format: func(n *repo.NewRepositoryOptions) {
 			},
 			oids: map[string]object.ID{
-				"": mustParseObjectID(t, "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"),
-				"The quick brown fox jumps over the lazy dog": mustParseObjectID(t, "fb011e6154a19b9a4c767373c305275a5a69e8b68b0b4c9200c383dced19a416"),
+				"": mustParseObjectID(t, "0c2d44dc80de21b71d4219623082f5dc253fe9bb54e48b0fc90e118f8e6cf419"),
+				"The quick brown fox jumps over the lazy dog": mustParseObjectID(t, "6bbb74fef0699e516fb96252d8280c1c7f3492e12de9ec6d79c3c9c39b7b0063"),
 			},
 		},
 		{
@@ -579,11 +580,13 @@ func TestObjectWritesWithRetention(t *testing.T) {
 	require.NoError(t, versionedMap.ListBlobs(ctx, "", func(it blob.Metadata) error {
 		for _, prefix := range prefixesWithRetention {
 			if strings.HasPrefix(string(it.BlobID), prefix) {
-				require.Error(t, versionedMap.TouchBlob(ctx, it.BlobID, 0), "expected error while touching blob %s", it.BlobID)
+				_, err = versionedMap.TouchBlob(ctx, it.BlobID, 0)
+				require.Error(t, err, "expected error while touching blob %s", it.BlobID)
 				return nil
 			}
 		}
-		require.NoError(t, versionedMap.TouchBlob(ctx, it.BlobID, 0), "unexpected error while touching blob %s", it.BlobID)
+		_, err = versionedMap.TouchBlob(ctx, it.BlobID, 0)
+		require.NoError(t, err, "unexpected error while touching blob %s", it.BlobID)
 		return nil
 	}))
 }
@@ -637,20 +640,10 @@ func TestWriteSessionFlushOnSuccess(t *testing.T) {
 	require.EqualValues(t, 2, afterFlushCount.Load())
 }
 
-func TestWriteSessionFlushOnSuccessClient_REST(t *testing.T) {
-	testWriteSessionFlushOnSuccessClient(t, true)
-}
-
-func TestWriteSessionFlushOnSuccessClient_GRPC(t *testing.T) {
-	testWriteSessionFlushOnSuccessClient(t, false)
-}
-
-//nolint:thelper
-func testWriteSessionFlushOnSuccessClient(t *testing.T, disableGRPC bool) {
+func TestWriteSessionFlushOnSuccessClient(t *testing.T) {
 	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant, repotesting.Options{})
 
 	apiServerInfo := servertesting.StartServer(t, env, true)
-	apiServerInfo.DisableGRPC = disableGRPC
 
 	var beforeFlushCount, afterFlushCount atomic.Int32
 
@@ -768,7 +761,8 @@ func (s *formatSpecificTestSuite) TestChangePassword(t *testing.T) {
 func TestMetrics_CompressibleData(t *testing.T) {
 	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
 	_ = ctx
-	ms := env.Repository.Metrics().Snapshot(false)
+
+	ms := env.RepositoryMetrics().Snapshot(false)
 
 	require.EqualValues(t, 0, ensureMapEntry(t, ms.Counters, "content_write_bytes"))
 
@@ -778,7 +772,7 @@ func TestMetrics_CompressibleData(t *testing.T) {
 		oid       object.ID
 	)
 
-	for ensureMapEntry(t, env.Repository.Metrics().Snapshot(false).Counters, "content_write_duration_nanos") < 5e6 {
+	for ensureMapEntry(t, env.RepositoryMetrics().Snapshot(false).Counters, "content_write_duration_nanos") < 5e6 {
 		w := env.RepositoryWriter.NewObjectWriter(ctx, object.WriterOptions{
 			Compressor: "gzip",
 		})
@@ -792,7 +786,7 @@ func TestMetrics_CompressibleData(t *testing.T) {
 		count++
 	}
 
-	ms = env.Repository.Metrics().Snapshot(false)
+	ms = env.RepositoryMetrics().Snapshot(false)
 	require.EqualValues(t, count*len(inputData), ensureMapEntry(t, ms.Counters, "content_write_bytes"))
 	require.EqualValues(t, count*len(inputData), ensureMapEntry(t, ms.Counters, "content_hashed_bytes"))
 	require.EqualValues(t, len(inputData), ensureMapEntry(t, ms.Counters, "content_compression_attempted_bytes"))
@@ -816,7 +810,7 @@ func TestMetrics_CompressibleData(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, inputData, data)
 
-	ms = env.Repository.Metrics().Snapshot(false)
+	ms = env.RepositoryMetrics().Snapshot(false)
 	require.EqualValues(t, len(inputData), ensureMapEntry(t, ms.Counters, "content_read_bytes"))
 	require.EqualValues(t, compressedByteCount, ensureMapEntry(t, ms.Counters, "content_decompressed_bytes"))
 	require.EqualValues(t, compressedByteCount+encryptionOverhead, ensureMapEntry(t, ms.Counters, "content_decrypted_bytes"))
@@ -834,7 +828,7 @@ func ensureMapEntry[T any](t *testing.T, m map[string]T, key string) T {
 func TestAllRegistryMetricsAreMapped(t *testing.T) {
 	_, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
 
-	snap := env.Repository.Metrics().Snapshot(false)
+	snap := env.RepositoryMetrics().Snapshot(false)
 
 	for s := range snap.Counters {
 		require.Contains(t, metricid.Counters.NameToIndex, s)
@@ -863,8 +857,8 @@ func TestDeriveKey(t *testing.T) {
 	formatEncryptionKeyFromPassword, err := j.DeriveFormatEncryptionKeyFromPassword(repotesting.DefaultPasswordForTesting)
 	require.NoError(t, err)
 
-	validV1KeyDerivedFromPassword := format.DeriveKeyFromMasterKey(formatEncryptionKeyFromPassword, uniqueID, testPurpose, testKeyLength)
-	validV2KeyDerivedFromMasterKey := format.DeriveKeyFromMasterKey(masterKey, uniqueID, testPurpose, testKeyLength)
+	validV1KeyDerivedFromPassword := crypto.DeriveKeyFromMasterKey(formatEncryptionKeyFromPassword, uniqueID, testPurpose, testKeyLength)
+	validV2KeyDerivedFromMasterKey := crypto.DeriveKeyFromMasterKey(masterKey, uniqueID, testPurpose, testKeyLength)
 
 	setup := func(v format.Version) repo.DirectRepositoryWriter {
 		_, env := repotesting.NewEnvironment(t, v, repotesting.Options{
@@ -882,6 +876,7 @@ func TestDeriveKey(t *testing.T) {
 			NewRepositoryOptions: func(nro *repo.NewRepositoryOptions) {
 				// do not set nro.BlockFormat.MasterKey
 				nro.UniqueID = uniqueID
+				nro.FormatBlockKeyDerivationAlgorithm = format.DefaultKeyDerivationAlgorithm
 			},
 		})
 
@@ -889,16 +884,16 @@ func TestDeriveKey(t *testing.T) {
 		dw1Upgraded := env.Repository.(repo.DirectRepositoryWriter)
 		cf := dw1Upgraded.ContentReader().ContentFormat()
 
-		mp, mperr := cf.GetMutableParameters()
+		mp, mperr := cf.GetMutableParameters(ctx)
 		require.NoError(t, mperr)
 
-		feat, err := dw1Upgraded.FormatManager().RequiredFeatures()
+		feat, err := dw1Upgraded.FormatManager().RequiredFeatures(ctx)
 		require.NoError(t, err)
 
 		// perform upgrade
 		mp.Version = v2
 
-		blobCfg, err := dw1Upgraded.FormatManager().BlobCfgBlob()
+		blobCfg, err := dw1Upgraded.FormatManager().BlobCfgBlob(ctx)
 		require.NoError(t, err)
 
 		require.NoError(t, dw1Upgraded.FormatManager().SetParameters(ctx, mp, blobCfg, feat))
@@ -923,7 +918,7 @@ func TestDeriveKey(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			mp, err := tc.dw.FormatManager().GetMutableParameters()
+			mp, err := tc.dw.FormatManager().GetMutableParameters(testlogging.Context(t))
 			require.NoError(t, err)
 
 			require.Equal(t, tc.wantFormat, mp.Version)

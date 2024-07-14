@@ -85,7 +85,7 @@ func TestFormatUpgradeAlreadyUpgraded(t *testing.T) {
 	}
 
 	_, err := env.RepositoryWriter.FormatManager().SetUpgradeLockIntent(ctx, *l)
-	require.EqualError(t, err, fmt.Sprintf("repository is using version %d, and version %d is the maximum",
+	require.ErrorContains(t, err, fmt.Sprintf("repository is using version %d, and version %d is the maximum",
 		format.MaxFormatVersion, format.MaxFormatVersion))
 }
 
@@ -192,7 +192,7 @@ func TestFormatUpgradeMultipleLocksRollback(t *testing.T) {
 		opts.UpgradeOwnerID = "another-upgrade-owner"
 	})
 
-	mp, mperr := env.RepositoryWriter.ContentManager().ContentFormat().GetMutableParameters()
+	mp, mperr := env.RepositoryWriter.ContentManager().ContentFormat().GetMutableParameters(ctx)
 	require.NoError(t, mperr)
 	require.Equal(t, format.FormatVersion3, mp.Version)
 
@@ -213,7 +213,7 @@ func TestFormatUpgradeMultipleLocksRollback(t *testing.T) {
 	require.EqualError(t, env.RepositoryWriter.FormatManager().CommitUpgrade(ctx), "no upgrade in progress")
 
 	// verify that we are back to the original version where we started from
-	mp, err = env.RepositoryWriter.ContentManager().ContentFormat().GetMutableParameters()
+	mp, err = env.RepositoryWriter.ContentManager().ContentFormat().GetMutableParameters(ctx)
 	require.NoError(t, err)
 
 	require.Equal(t, format.FormatVersion1, mp.Version)
@@ -391,11 +391,11 @@ func TestFormatUpgradeDuringOngoingWriteSessions(t *testing.T) {
 	curTime = curTime.Add(formatBlockCacheDuration + time.Second)
 
 	// ongoing writes should get interrupted this time
-	require.ErrorIs(t, w1.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgrageInProgress)
+	require.ErrorIs(t, w1.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgradeInProgress)
 
-	require.ErrorIs(t, w2.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgrageInProgress)
-	require.ErrorIs(t, w3.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgrageInProgress)
-	require.ErrorIs(t, lw.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgrageInProgress)
+	require.ErrorIs(t, w2.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgradeInProgress)
+	require.ErrorIs(t, w3.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgradeInProgress)
+	require.ErrorIs(t, lw.Flush(ctx), repo.ErrRepositoryUnavailableDueToUpgradeInProgress)
 }
 
 func writeObject(ctx context.Context, t *testing.T, rep repo.RepositoryWriter, data []byte, testCaseID string) {

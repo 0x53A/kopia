@@ -45,7 +45,7 @@ func (c *commandSnapshotVerify) setup(svc appServices, parent commandParent) {
 
 func (c *commandSnapshotVerify) run(ctx context.Context, rep repo.Repository) error {
 	if c.verifyCommandAllSources {
-		log(ctx).Errorf("DEPRECATED: --all-sources flag has no effect and is the default when no sources are provided.")
+		log(ctx).Error("DEPRECATED: --all-sources flag has no effect and is the default when no sources are provided.")
 	}
 
 	if dr, ok := rep.(repo.DirectRepositoryWriter); ok {
@@ -69,6 +69,7 @@ func (c *commandSnapshotVerify) run(ctx context.Context, rep repo.Repository) er
 	}
 
 	v := snapshotfs.NewVerifier(ctx, rep, opts)
+	defer v.ShowFinalStats(ctx)
 
 	//nolint:wrapcheck
 	return v.InParallel(ctx, func(tw *snapshotfs.TreeWalker) error {
@@ -136,10 +137,12 @@ func (c *commandSnapshotVerify) loadSourceManifests(ctx context.Context, rep rep
 			if err != nil {
 				return nil, errors.Wrapf(err, "error parsing %q", srcStr)
 			}
+
 			man, err := snapshot.ListSnapshotManifests(ctx, rep, &src, nil)
 			if err != nil {
 				return nil, errors.Wrapf(err, "unable to list snapshot manifests for %v", src)
 			}
+
 			manifestIDs = append(manifestIDs, man...)
 		}
 	}

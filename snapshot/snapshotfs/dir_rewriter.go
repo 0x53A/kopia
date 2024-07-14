@@ -67,6 +67,8 @@ type dirRewriterRequest struct {
 }
 
 func (rw *DirRewriter) processRequest(pool *workshare.Pool[*dirRewriterRequest], req *dirRewriterRequest) {
+	_ = pool
+
 	req.result, req.err = rw.getCachedReplacement(req.ctx, req.parentPath, req.input)
 }
 
@@ -130,7 +132,7 @@ func (rw *DirRewriter) getCachedReplacement(ctx context.Context, parentPath stri
 }
 
 func (rw *DirRewriter) processDirectory(ctx context.Context, pathFromRoot string, entry *snapshot.DirEntry) (*snapshot.DirEntry, error) {
-	dirRewriterLog(ctx).Debugf("processDirectory", "path", pathFromRoot)
+	dirRewriterLog(ctx).Debugw("processDirectory", "path", pathFromRoot)
 
 	r, err := rw.rep.OpenObject(ctx, entry.ObjectID)
 	if err != nil {
@@ -246,6 +248,8 @@ func (rw *DirRewriter) Close(ctx context.Context) {
 }
 
 // RewriteKeep is a callback that keeps the unreadable entry.
+//
+//nolint:revive
 func RewriteKeep(ctx context.Context, parentPath string, input *snapshot.DirEntry, err error) (*snapshot.DirEntry, error) {
 	return input, nil
 }
@@ -254,6 +258,8 @@ func RewriteKeep(ctx context.Context, parentPath string, input *snapshot.DirEntr
 // the error.
 func RewriteAsStub(rep repo.RepositoryWriter) RewriteFailedEntryCallback {
 	return func(ctx context.Context, parentPath string, input *snapshot.DirEntry, originalErr error) (*snapshot.DirEntry, error) {
+		_ = parentPath
+
 		var buf bytes.Buffer
 
 		e := json.NewEncoder(&buf)
@@ -293,11 +299,15 @@ func RewriteAsStub(rep repo.RepositoryWriter) RewriteFailedEntryCallback {
 }
 
 // RewriteFail is a callback that fails the entire rewrite process when a directory is unreadable.
+//
+//nolint:revive
 func RewriteFail(ctx context.Context, parentPath string, entry *snapshot.DirEntry, err error) (*snapshot.DirEntry, error) {
 	return nil, err
 }
 
 // RewriteRemove is a callback that removes the entire failed entry.
+//
+//nolint:revive
 func RewriteRemove(ctx context.Context, parentPath string, entry *snapshot.DirEntry, err error) (*snapshot.DirEntry, error) {
 	return nil, nil
 }

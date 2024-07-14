@@ -30,7 +30,7 @@ func EditLoop(ctx context.Context, fname, initial string, parse func(updated str
 	tmpFile := filepath.Join(tmpDir, fname)
 	defer os.RemoveAll(tmpDir) //nolint:errcheck
 
-	//nolint:gomnd
+	//nolint:mnd
 	if err := os.WriteFile(tmpFile, []byte(initial), 0o600); err != nil {
 		return errors.Wrap(err, "unable to write file to edit")
 	}
@@ -68,7 +68,7 @@ func readAndStripComments(fname string) (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "error opening edited file")
 	}
-	defer f.Close() //nolint:errcheck,gosec
+	defer f.Close() //nolint:errcheck
 
 	var result []string
 
